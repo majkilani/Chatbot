@@ -5,7 +5,7 @@ import requests
 app = Flask(__name__)
 
 # Environment variables
-VERIFY_TOKEN = os.environ.get('y-secret-token')
+VERIFY_TOKEN = os.environ.get('myspecialtoken123')
 PAGE_ACCESS_TOKEN = os.environ.get('EAAXuqkbSalgBO37zP9ofVIVmmSljOPI34JVevXUJWLU48HZA1ZAO36EsuZBXINA0rZCRwcy8mqvLEZBP99D776SkDsJW3m5zLTqQ9ZB2YvVrcUtUkIzEcnBJdEIQPxyY6xXbLj2ITrZCP1ruxIV5NbXTuEJJHZC98X7mgy4rFDT6D7289F688YO77bEAWfQZBCDhqEMNEUlaFOyCGRgIZD')
 PERPLEXITY_API_KEY = os.environ.get('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')
 
