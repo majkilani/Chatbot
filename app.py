@@ -120,6 +120,10 @@ def send_message(recipient_id, message_text):
         return False
 
 @app.route('/', methods=['GET'])
+def home():
+    return "Bot is running!"
+
+@app.route('/webhook', methods=['GET'])
 def verify():
     if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
         if request.args.get("hub.verify_token") == VERIFY_TOKEN:
@@ -127,7 +131,7 @@ def verify():
         return "Invalid verification token"
     return "Hello world"
 
-@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
     logger.debug(f"Received webhook data: {data}")
