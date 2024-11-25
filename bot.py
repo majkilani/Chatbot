@@ -5,6 +5,9 @@ import json
 
 app = Flask(__name__)
 
+# Temporary storage for user sessions
+user_sessions = {}
+
 @app.route('/', methods=['GET'])
 def verify():
     return "Bot is running!"
@@ -27,36 +30,110 @@ def webhook():
                 
                 if messaging_event.get("message"):
                     if "text" in messaging_event["message"]:
-                        received_text = messaging_event["message"]["text"].lower()
+                        message_text = messaging_event["message"]["text"].lower()
                         
-                        # Simple response test
-                        if received_text in ["hi", "hello", "привіт"]:
-                            send_message(sender_id, "Привіт! 👋 Я допоможу вам замовити яйця!")
+                        if message_text in ["привіт", "прівет", "hi", "hello"]:
+                            send_message(sender_id, "Привіт! 👋\nЩоб замовити яйця, напишіть 'замовити'")
+                        elif message_text == "замовити":
+                            start_order(sender_id)
+                        elif sender_id in user_sessions:
+                            process_order(sender_id, message_text)
+                            
     return "ok", 200
 
 def send_message(recipient_id, message_text):
+    try:
+        response = requests.post(
+            "https://graph.facebook.com/v2.6/me/messages",
+            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
+            headers={"Content-Type": "application/json"},
+            json={
+                "messaging_type": "RESPONSE",
+                "recipient": {"id": recipient_id},
+                "message": {"text": message_text}
+            }
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending message: {e}")
+
+def start_order(sender_id):
+    user_sessions[sender_id] = {
+        'state': 'quantity',
+        'order': {}
+    }
+    send_message(sender_id, "🥚 Скільки десятків яєць ви бажаєте замовити?\nБудь ласка, введіть число:")
+
+def process_order(sender_id, message_text):
+    session = user_sessions.get(sender_id)
+    if not session:
+        return
+
+    state = session['state']
+    
+    if state == 'quantity':
+        try:
+            quantity = int(message_text)
+            if quantity <= 0:
+                send_message(sender_id, "❌ Будь ласка, введіть число більше 0")
+                return
+            
+            session['order']['quantity'] = quantity
+            session['state'] = 'phone'
+            send_message(sender_id, "📱 Введіть ваш номер телефону у форматі:\n+380XXXXXXXXX")
+            
+        except ValueError:
+            send_message(sender_id, "❌ Будь ласка, введіть правильне число")
+            
+    elif state == 'phone':
+        if message_text.startswith('+380') and len(message_text) == 13 and message_text[1:].isdigit():
+            session['order']['phone'] = message_text
+            session['state'] = 'address'
+            send_message(sender_id, "📍 Введіть адресу доставки:")
+        else:
+            send_message(sender_id, "❌ Будь ласка, введіть номер у форматі +380XXXXXXXXX")
+            
+    elif state == 'address':
+        session['order']['address'] = message_text
+        
+        # Create order summary
+        order = session['order']
+        summary = (f"📝 Ваше замовлення:\n"
+                  f"Кількість: {order['quantity']} десятків\n"
+                  f"Телефон: {order['phone']}\n"
+                  f"Адреса: {order['address']}\n\n"
+                  f"Дякуємо за замовлення! Ми зв'яжемося з вами найближчим часом.")
+        
+        send_message(sender_id, summary)
+        
+        # Clear the session
+        del user_sessions[sender_id]
+
+@app.route('/setup', methods=['GET'])
+def setup_bot():
     data = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message_text}
+        "get_started": {
+            "payload": "GET_STARTED"
+        },
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "Вітаємо! Замовляйте свіжі яйця з доставкою! 🥚"
+            }
+        ]
     }
     
-    params = {
-        "access_token": os.environ["PAGE_ACCESS_TOKEN"]
-    }
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    r = requests.post(
-        "https://graph.facebook.com/v2.6/me/messages",
-        params=params,
-        headers=headers,
-        json=data
-    )
-    
-    if r.status_code != 200:
-        print(r.status_code)
-        print(r.text)
+    try:
+        response = requests.post(
+            "https://graph.facebook.com/v2.6/me/messenger_profile",
+            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
+            headers={"Content-Type": "application/json"},
+            json=data
+        )
+        response.raise_for_status()
+        return "Setup successful!", 200
+    except requests.exceptions.RequestException as e:
+        return f"Setup failed: {str(e)}", 500
 
 if __name__ == "__main__":
     app.run(debug=True)
