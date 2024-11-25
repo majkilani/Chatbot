@@ -1,5 +1,4 @@
 flask
 requests
 python-dotenv
-perplexity==0.2.1
 gunicorn
