@@ -27,11 +27,10 @@ def webhook():
     if data["object"] == "page":
         for entry in data["entry"]:
             for messaging_event in entry["messaging"]:
-                # Skip if the message is from the page
-                if messaging_event.get("message", {}).get("is_echo"):
-                    continue
-                    
-                # Only process messages from users
+                # Important: Skip if message is from the bot itself
+                if "message" in messaging_event and messaging_event["message"].get("is_echo", False):
+                    return "ok", 200
+
                 if (messaging_event.get("message") and 
                     "text" in messaging_event["message"] and 
                     "sender" in messaging_event):
@@ -129,6 +128,33 @@ def process_order(sender_id, message_text):
         
         # Clear the session
         del user_sessions[sender_id]
+
+@app.route('/setup', methods=['GET'])
+def setup_bot():
+    data = {
+        "get_started": {
+            "payload": "GET_STARTED"
+        },
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "Вітаємо! Замовляйте свіжі яйця з доставкою! 🥚"
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(
+            "https://graph.facebook.com/v2.6/me/messenger_profile",
+            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
+            headers={"Content-Type": "application/json"},
+            json=data
+        )
+        if response.status_code != 200:
+            return f"Setup failed: {response.status_code} {response.text}", 500
+        return "Setup successful!", 200
+    except Exception as e:
+        return f"Setup failed: {str(e)}", 500
 
 if __name__ == "__main__":
     app.run(debug=True)
