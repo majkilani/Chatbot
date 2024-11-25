@@ -1,7 +1,6 @@
 from flask import Flask, request
 import requests
 import os
-import json
 
 app = Flask(__name__)
 
@@ -23,39 +22,57 @@ def verify_webhook():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
+    
     if data["object"] == "page":
         for entry in data["entry"]:
             for messaging_event in entry["messaging"]:
-                sender_id = messaging_event["sender"]["id"]
-                
-                if messaging_event.get("message"):
+                if "message" in messaging_event:
+                    sender_id = messaging_event["sender"]["id"]
+                    # Check if this is an echo of our own message
+                    if messaging_event["message"].get("is_echo"):
+                        continue
+                        
                     if "text" in messaging_event["message"]:
                         message_text = messaging_event["message"]["text"].lower()
                         
-                        if message_text in ["привіт", "прівет", "hi", "hello"]:
+                        # Handle greetings
+                        if message_text in ["привіт", "прівет", "hi", "hello", "добрый вечер"]:
                             send_message(sender_id, "Привіт! 👋\nЩоб замовити яйця, напишіть 'замовити'")
                         elif message_text == "замовити":
                             start_order(sender_id)
                         elif sender_id in user_sessions:
                             process_order(sender_id, message_text)
-                            
+    
     return "ok", 200
 
 def send_message(recipient_id, message_text):
     try:
+        params = {
+            "access_token": os.environ["PAGE_ACCESS_TOKEN"]
+        }
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = {
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "text": message_text
+            }
+        }
+        
         response = requests.post(
             "https://graph.facebook.com/v2.6/me/messages",
-            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
-            headers={"Content-Type": "application/json"},
-            json={
-                "messaging_type": "RESPONSE",
-                "recipient": {"id": recipient_id},
-                "message": {"text": message_text}
-            }
+            params=params,
+            headers=headers,
+            json=data
         )
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending message: {e}")
+        if response.status_code != 200:
+            print(f"Failed to send message: {response.status_code} {response.text}")
+            
+    except Exception as e:
+        print(f"Error sending message: {str(e)}")
 
 def start_order(sender_id):
     user_sessions[sender_id] = {
@@ -130,9 +147,10 @@ def setup_bot():
             headers={"Content-Type": "application/json"},
             json=data
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            return f"Setup failed: {response.status_code} {response.text}", 500
         return "Setup successful!", 200
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         return f"Setup failed: {str(e)}", 500
 
 if __name__ == "__main__":
