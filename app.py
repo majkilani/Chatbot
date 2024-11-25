@@ -78,6 +78,7 @@ CUSTOM_TRAINING_EXAMPLES = {
         }
     ]
 }
+
 def verify_page_token():
     try:
         response = requests.get(
@@ -184,6 +185,7 @@ def send_message(recipient_id, message_text):
             
     except Exception as e:
         logger.error(f"Error sending message: {str(e)}")
+
 @app.route('/', methods=['GET'])
 def verify():
     if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
