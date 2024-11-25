@@ -16,6 +16,9 @@ PERPLEXITY_API_KEY = os.environ.get('PERPLEXITY_API_KEY')
 
 def get_perplexity_response(prompt):
     """Get response from Perplexity AI API"""
+    print(f"Sending request to Perplexity API with prompt: {prompt}")
+    print(f"Using API key: {PERPLEXITY_API_KEY[:5]}...") # Print first 5 chars of API key for verification
+    
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
         "Content-Type": "application/json"
@@ -27,23 +30,31 @@ def get_perplexity_response(prompt):
     }
     
     try:
+        print("Making request to Perplexity API...")
         response = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers=headers,
             json=data
         )
         
+        print(f"Perplexity API Response Status Code: {response.status_code}")
+        print(f"Perplexity API Response: {response.text}")
+        
         if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
+            result = response.json()['choices'][0]['message']['content']
+            print(f"Successfully got response: {result[:100]}...")  # Print first 100 chars
+            return result
         else:
             print(f"Error from Perplexity API: {response.status_code} - {response.text}")
-            return "Sorry, I couldn't process your request at this time."
+            return f"Sorry, I couldn't process your request at this time. Status code: {response.status_code}"
     except Exception as e:
         print(f"Exception while calling Perplexity API: {str(e)}")
-        return "Sorry, an error occurred while processing your request."
+        return f"Sorry, an error occurred while processing your request. Error: {str(e)}"
 
 def send_message(recipient_id, message_text):
     """Send message to user through Facebook Messenger"""
+    print(f"Sending message to {recipient_id}: {message_text[:100]}...")  # Print first 100 chars
+    
     params = {
         "access_token": PAGE_ACCESS_TOKEN
     }
@@ -67,6 +78,9 @@ def send_message(recipient_id, message_text):
             json=data
         )
         
+        print(f"Facebook API Response Status Code: {response.status_code}")
+        print(f"Facebook API Response: {response.text}")
+        
         if response.status_code != 200:
             print(f"Error sending message: {response.status_code} - {response.text}")
             
@@ -86,6 +100,7 @@ def verify():
 def webhook():
     """Handle incoming messages"""
     data = request.get_json()
+    print(f"Received webhook data: {json.dumps(data, indent=2)}")
     
     if data['object'] == 'page':
         for entry in data['entry']:
@@ -95,6 +110,8 @@ def webhook():
                         # Get the sender ID and message text
                         sender_id = messaging_event['sender']['id']
                         message_text = messaging_event['message'].get('text', '')
+                        
+                        print(f"Received message from {sender_id}: {message_text}")
                         
                         if message_text:
                             # Get response from Perplexity
@@ -112,7 +129,7 @@ def webhook():
                             
                     except Exception as e:
                         print(f"Error processing message: {str(e)}")
-                        send_message(sender_id, "Sorry, something went wrong while processing your message.")
+                        send_message(sender_id, f"Sorry, something went wrong while processing your message. Error: {str(e)}")
                         
     return 'ok'
 
