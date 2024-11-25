@@ -75,14 +75,14 @@ def send_message(recipient_id, message_text):
         print(f"Exception while sending message: {str(e)}")
         return None
 
-@app.route('/', methods=['GET'])
+@app.route('/webhook', methods=['GET'])
 def verify():
     """Handle the initial verification of the webhook"""
     if request.args.get('hub.verify_token') == VERIFY_TOKEN:
         return request.args.get('hub.challenge')
     return 'Invalid verification token'
 
-@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming messages"""
     data = request.get_json()
