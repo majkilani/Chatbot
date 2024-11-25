@@ -6,8 +6,6 @@ import json
 import logging
 import re
 from datetime import datetime
-from facebook_business.api import FacebookAdsApi
-from facebook_business.adobjects.page import Page
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -17,16 +15,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Environment variables
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
 PERPLEXITY_API_KEY = os.environ.get('PERPLEXITY_API_KEY')
-PAGE_ID = os.environ.get('PAGE_ID')
-FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID')
-FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET')
-
-# Initialize Facebook API
-FacebookAdsApi.init(FACEBOOK_APP_ID, FACEBOOK_APP_SECRET, PAGE_ACCESS_TOKEN)
 
 # Pattern matching for common queries
 PATTERNS = {
@@ -37,86 +28,35 @@ PATTERNS = {
 }
 
 STANDARD_RESPONSES = {
-    'price': """Ціна на одне яйце залежить від кількості замовлених яєць.
-    Актуальну ціну дивіться в останньому пості.""",
-    'delivery': "Інформація про доставку оновлюється в наших постах.",
+    'price': "Наші ціни на яйця:\n- 1 лоток (30 яєць) = 45 шекелів\n- 2 лотки (60 яєць) = 85 шекелів",
+    'delivery': "Ми доставляємо в Ашкелон та Беер-Шеву. Доставка безкоштовна!",
     'order': "Для замовлення, будь ласка, вкажіть:\n1. Кількість лотків\n2. Адресу доставки\n3. Бажану дату доставки",
-    'schedule': "Ми працюємо з понеділка по суботу. Замовлення приймаємо за день до доставки."
+    'schedule': "Ми працюємо з неділі по п'ятницю. Замовлення приймаємо за день до доставки."
 }
 
-class FacebookPagePosts:
-    def __init__(self):
-        self.page = Page(PAGE_ID)
-        self.latest_post_cache = None
-        self.cache_timestamp = None
-        
-    def get_latest_posts(self, limit=5):
-        try:
-            fields = [
-                'message',
-                'created_time',
-                'attachments',
-                'comments',
-                'shares',
-                'reactions'
-            ]
-            posts = self.page.get_posts(fields=fields, limit=limit)
-            return list(posts)
-        except Exception as e:
-            logger.error(f"Error fetching posts: {str(e)}")
-            return []
-
-    def extract_price_from_post(self, post_message):
-        price_pattern = r'(\d+(?:[.,]\d+)?)\s*(?:грн|гривень|грв|₴)'
-        matches = re.findall(price_pattern, post_message)
-        return matches[0] if matches else None
-
-    def extract_delivery_info(self, post_message):
-        delivery_patterns = [
-            r'доставк[аи]\s*[:]\s*([^.\n]+)',
-            r'доставляємо\s*([^.\n]+)',
-            r'привеземо\s*([^.\n]+)'
-        ]
-        
-        for pattern in delivery_patterns:
-            match = re.search(pattern, post_message.lower())
-            if match:
-                return match.group(1).strip()
-        return None
-
-    def get_latest_post_info(self):
-        posts = self.get_latest_posts(limit=1)
-        if not posts:
-            return None
-
-        latest_post = posts[0]
-        post_info = {
-            'message': latest_post.get('message', ''),
-            'created_time': latest_post.get('created_time'),
-            'price': None,
-            'delivery_info': None
+# Custom training examples
+CUSTOM_TRAINING_EXAMPLES = {
+    "price_examples": [
+        {
+            "question": "Скільки коштують яйця?",
+            "answer": "Наші ціни на яйця:\n- 1 лоток (30 яєць) = 45 шекелів\n- 2 лотки (60 яєць) = 85 шекелів"
+        },
+        {
+            "question": "Яка ціна за лоток?",
+            "answer": "Один лоток (30 яєць) коштує 45 шекелів. При замовленні двох лотків - 85 шекелів."
         }
-
-        if post_info['message']:
-            post_info['price'] = self.extract_price_from_post(post_info['message'])
-            post_info['delivery_info'] = self.extract_delivery_info(post_info['message'])
-
-        return post_info
-
-def get_current_info():
-    fb_posts = FacebookPagePosts()
-    latest_post = fb_posts.get_latest_post_info()
-    
-    if latest_post:
-        price_info = latest_post['price'] if latest_post['price'] else "50-55 гривень"
-        delivery_info = latest_post['delivery_info'] if latest_post['delivery_info'] else "по місту"
-        
-        return {
-            'price': price_info,
-            'delivery': delivery_info,
-            'full_post': latest_post['message']
+    ],
+    "delivery_examples": [
+        {
+            "question": "Куди ви доставляєте?",
+            "answer": "Ми доставляємо в Ашкелон та Беер-Шеву. Доставка безкоштовна!"
+        },
+        {
+            "question": "Як замовити доставку?",
+            "answer": "Для замовлення доставки просто напишіть нам кількість лотків, адресу та бажану дату доставки."
         }
-    return None
+    ]
+}
 
 def verify_page_token():
     try:
@@ -148,115 +88,211 @@ def save_conversation(user_message, bot_response, feedback=None):
     except Exception as e:
         logger.error(f"Error saving conversation: {str(e)}")
 
-def get_perplexity_response(message, current_info):
+def monitor_response_quality(user_message, bot_response):
+    metrics = {
+        "timestamp": datetime.now().isoformat(),
+        "message_length": len(user_message),
+        "response_length": len(bot_response),
+        "contains_price": bool(re.search(r'(\d+)\s*шекелів', bot_response)),
+        "contains_delivery": bool(re.search(r'доставк', bot_response.lower())),
+    }
+    
+    try:
+        with open('response_metrics.json', 'a', encoding='utf-8') as f:
+            json.dump(metrics, f, ensure_ascii=False)
+            f.write('\n')
+    except Exception as e:
+        logger.error(f"Error saving metrics: {str(e)}")
+
+def get_response_by_pattern(user_message):
+    user_message = user_message.lower()
+    for pattern, response_type in PATTERNS.items():
+        if re.search(pattern, user_message):
+            return STANDARD_RESPONSES[response_type]
+    return None
+
+def get_perplexity_response(user_message):
+    training_messages = []
+    for category in CUSTOM_TRAINING_EXAMPLES.values():
+        for example in category:
+            training_messages.extend([
+                {"role": "user", "content": example["question"]},
+                {"role": "assistant", "content": example["answer"]}
+            ])
+
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
         "Content-Type": "application/json"
     }
-    
-    system_prompt = f"""You are a helpful Ukrainian-speaking assistant for an egg delivery service. 
 
-Latest information from our Facebook page:
-{current_info['full_post'] if current_info else 'Information temporarily unavailable'}
-
-Current Price: {current_info['price'] if current_info else '50-55 гривень за лоток'}
-Delivery: {current_info['delivery'] if current_info else 'по місту'}
-
-Always respond in Ukrainian. Be concise but friendly."""
-
-    data = {
-        "model": "mixtral-8x7b-instruct",
+    payload = {
+        "model": "llama-3.1-sonar-small-128k-online",
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message}
-        ]
+            {
+                "role": "system",
+                "content": """You are a helpful assistant for an egg business. Always respond in Ukrainian language. Use these standard responses:
+
+                Price information / Інформація про ціни:
+                "Наші ціни на яйця:
+                - 1 лоток (30 яєць) = 45 шекелів
+                - 2 лотки (60 яєць) = 85 шекелів
+                Ціна включає доставку"
+
+                Delivery information / Інформація про доставку:
+                "Інформація про доставку:
+                - Безкоштовна доставка в Ашкелон та Беер-Шеву
+                - Мінімальне замовлення: 1 лоток (30 яєць)
+                - Доставка: з неділі по п'ятницю
+                - Замовлення потрібно робити мінімум за 1 день"
+
+                Welcome message / Привітання:
+                "Вітаємо! Ми продаємо свіжі фермерські яйця з доставкою. Чим можемо допомогти?"
+
+                Order confirmation / Підтвердження замовлення:
+                "Дякуємо за замовлення! Для підтвердження, будь ласка, вкажіть:
+                1. Кількість лотків
+                2. Адресу доставки
+                3. Бажану дату доставки"
+
+                Contact information / Контактна інформація:
+                "Для додаткової інформації або термінових питань, звертайтесь за телефоном: [Your phone number]"
+
+                Out of stock / Немає в наявності:
+                "Вибачте, наразі всі яйця зарезервовані. Нова поставка очікується завтра."
+                """
+            },
+            *training_messages,
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ],
+        "temperature": 0.2,
+        "top_p": 0.9
     }
 
     try:
         response = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers=headers,
-            json=data
+            json=payload
         )
+        
         if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
+            response_data = response.json()
+            return response_data['choices'][0]['message']['content']
         else:
-            logger.error(f"Perplexity API error: {response.text}")
-            return None
+            logger.error(f"API Error: {response.status_code}")
+            return "Вибачте, виникла помилка. Спробуйте, будь ласка, пізніше."
+
     except Exception as e:
-        logger.error(f"Error calling Perplexity API: {str(e)}")
-        return None
-
-def get_response(message):
-    message = message.lower()
-    current_info = get_current_info()
-    
-    # Update standard responses with current information
-    if current_info:
-        STANDARD_RESPONSES['price'] = f"""Актуальна ціна: {current_info['price']}
-
-Інформація з останнього поста:
-{current_info['full_post'][:200]}..."""
-
-        STANDARD_RESPONSES['delivery'] = f"Інформація про доставку: {current_info['delivery']}"
-    
-    # Check pattern matching first
-    for pattern, response_key in PATTERNS.items():
-        if re.search(pattern, message):
-            return STANDARD_RESPONSES[response_key]
-    
-    # If no pattern match, use Perplexity API with current information
-    ai_response = get_perplexity_response(message, current_info)
-    if ai_response:
-        return ai_response
-    
-    return "Вибачте, я не зовсім зрозумів ваше питання. Можете уточнити?"
+        logger.error(f"Error: {str(e)}")
+        return "Вибачте, виникла помилка при обробці вашого запиту."
 
 def send_message(recipient_id, message_text):
+    params = {
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": message_text[:2000]
+        }
+    }
+
     try:
         response = requests.post(
-            "https://graph.facebook.com/v13.0/me/messages",
-            params={"access_token": PAGE_ACCESS_TOKEN},
-            json={
-                "recipient": {"id": recipient_id},
-                "message": {"text": message_text}
-            }
+            "https://graph.facebook.com/v18.0/me/messages",
+            params=params,
+            headers=headers,
+            json=data
         )
         
         if response.status_code != 200:
-            logger.error(f"Failed to send message: {response.text}")
+            logger.error(f"Failed to send message: {response.status_code}")
+            return False
+        return True
             
     except Exception as e:
         logger.error(f"Error sending message: {str(e)}")
+        return False
+
+def clean_training_data():
+    try:
+        with open('training_data.json', 'r', encoding='utf-8') as f:
+            conversations = [json.loads(line) for line in f]
+        
+        good_conversations = [c for c in conversations if c.get('feedback') == 'good']
+        
+        with open('clean_training_data.json', 'w', encoding='utf-8') as f:
+            for conv in good_conversations:
+                json.dump(conv, f, ensure_ascii=False)
+                f.write('\n')
+    except Exception as e:
+        logger.error(f"Error cleaning training data: {str(e)}")
 
 @app.route('/', methods=['GET'])
+def home():
+    return "Egg Business Bot is running!"
+
+@app.route('/webhook', methods=['GET'])
 def verify():
     if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
-        if not request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return "Verification token mismatch", 403
-        return request.args["hub.challenge"], 200
-    return "Hello world", 200
+        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+            return request.args.get("hub.challenge")
+        return "Invalid verification token"
+    return "Hello world"
 
-@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
     logger.debug(f"Received webhook data: {data}")
-
+    
     if data["object"] == "page":
         for entry in data["entry"]:
             for messaging_event in entry["messaging"]:
                 if messaging_event.get("message"):
                     sender_id = messaging_event["sender"]["id"]
-                    message_text = messaging_event["message"].get("text", "")
                     
-                    response = get_response(message_text)
-                    send_message(sender_id, response)
-                    save_conversation(message_text, response)
+                    if "text" in messaging_event["message"]:
+                        message_text = messaging_event["message"]["text"]
+                        
+                        # Try pattern matching first
+                        response = get_response_by_pattern(message_text)
+                        
+                        # If no pattern match, use Perplexity
+                        if not response:
+                            response = get_perplexity_response(message_text)
+                        
+                        # Monitor response quality
+                        monitor_response_quality(message_text, response)
+                        
+                        # Save conversation for training
+                        save_conversation(message_text, response)
+                        
+                        # Send response
+                        send_message(sender_id, response)
 
     return "ok", 200
 
-if __name__ == '__main__':
+@app.route('/feedback', methods=['POST'])
+def feedback():
+    data = request.get_json()
+    save_conversation(
+        data.get('user_message'),
+        data.get('bot_response'),
+        data.get('feedback')
+    )
+    return "Feedback received", 200
+
+if __name__ == "__main__":
     if verify_page_token():
-        app.run(debug=True)
+        logger.info("Page token is valid")
     else:
-        logger.error("Failed to verify Facebook Page Access Token")
+        logger.error("Page token is invalid")
+    app.run(debug=True)
