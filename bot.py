@@ -1,11 +1,21 @@
 from flask import Flask, request
 import requests
 import os
+from dotenv import load_dotenv
+import json
+import asyncio
+from perplexity import Perplexity
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 
 # Temporary storage for user sessions
 user_sessions = {}
+
+# Initialize Perplexity client
+perplexity = Perplexity(api_key=os.getenv('PERPLEXITY_API_KEY'))
 
 @app.route('/', methods=['GET'])
 def verify():
@@ -14,68 +24,85 @@ def verify():
 @app.route('/webhook', methods=['GET'])
 def verify_webhook():
     if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
-        if not request.args.get("hub.verify_token") == os.environ["VERIFY_TOKEN"]:
+        if not request.args.get("hub.verify_token") == os.getenv("VERIFY_TOKEN"):
             return "Token verification failed", 403
         return request.args["hub.challenge"], 200
     return "Hello", 200
 
+async def get_perplexity_response(query):
+    try:
+        response = await perplexity.chat(query)
+        return response
+    except Exception as e:
+        print(f"Error getting Perplexity response: {str(e)}")
+        return "Sorry, I couldn't process your request at the moment."
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
-    print("Received data:", data)  # Debug print
+    print("Received webhook data:", json.dumps(data, indent=2))
     
-    if data["object"] == "page":
-        for entry in data["entry"]:
-            for messaging_event in entry["messaging"]:
-                # Important: Skip if message is from the bot itself
-                if "message" in messaging_event and messaging_event["message"].get("is_echo", False):
-                    return "ok", 200
+    if data["object"] != "page":
+        return "ok", 200
 
-                if (messaging_event.get("message") and 
-                    "text" in messaging_event["message"] and 
-                    "sender" in messaging_event):
-                    
-                    sender_id = messaging_event["sender"]["id"]
-                    message_text = messaging_event["message"]["text"].lower()
-                    
-                    print(f"Processing message: {message_text} from sender: {sender_id}")  # Debug print
-                    
-                    # Handle different message types
-                    if message_text in ["привіт", "прівет", "hi", "hello", "добрый вечер", "привет"]:
-                        response_text = "Привіт! 👋\nЩоб замовити яйця, напишіть 'замовити'"
-                        send_message(sender_id, response_text)
-                    elif message_text == "замовити":
-                        start_order(sender_id)
-                    elif sender_id in user_sessions:
-                        process_order(sender_id, message_text)
-    
+    for entry in data["entry"]:
+        for messaging_event in entry["messaging"]:
+            # Skip if this is an echo of our own message
+            if messaging_event.get("message", {}).get("is_echo", False):
+                print("Skipping echo message")
+                continue
+
+            # Get the sender ID
+            sender_id = messaging_event.get("sender", {}).get("id")
+            if not sender_id:
+                continue
+
+            # Get the message text
+            message = messaging_event.get("message", {})
+            if not message or "text" not in message:
+                continue
+
+            message_text = message["text"].lower().strip()
+            print(f"Processing message: '{message_text}' from sender: {sender_id}")
+
+            # Handle different message types
+            if message_text in ["привіт", "прівет", "hi", "hello", "добрый вечер", "привет"]:
+                send_message(sender_id, "Привіт! 👋\nЩоб замовити яйця, напишіть 'замовити'\nДля довідки напишіть 'допомога'")
+            elif message_text == "замовити":
+                start_order(sender_id)
+            elif message_text == "допомога":
+                # Use Perplexity for help responses
+                response = asyncio.run(get_perplexity_response(
+                    "Provide a brief help message about ordering eggs in Ukrainian language"
+                ))
+                send_message(sender_id, response)
+            elif sender_id in user_sessions:
+                process_order(sender_id, message_text)
+            else:
+                # Use Perplexity for general responses
+                response = asyncio.run(get_perplexity_response(message_text))
+                send_message(sender_id, response)
+
     return "ok", 200
 
 def send_message(recipient_id, message_text):
     try:
-        message_data = {
-            "messaging_type": "RESPONSE",
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "text": message_text
-            }
+        url = f"https://graph.facebook.com/v2.6/me/messages"
+        params = {"access_token": os.getenv("PAGE_ACCESS_TOKEN")}
+        headers = {"Content-Type": "application/json"}
+        data = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": message_text}
         }
-
-        response = requests.post(
-            "https://graph.facebook.com/v2.6/me/messages",
-            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
-            json=message_data
-        )
         
-        print(f"Send message response: {response.status_code} {response.text}")  # Debug print
+        print(f"Sending message to {recipient_id}: {message_text}")
+        response = requests.post(url, params=params, headers=headers, json=data)
+        print(f"Facebook API response: {response.status_code} - {response.text}")
         
-        if response.status_code != 200:
-            print(f"Failed to send message: {response.status_code} {response.text}")
-            
+        return response.ok
     except Exception as e:
         print(f"Error sending message: {str(e)}")
+        return False
 
 def start_order(sender_id):
     user_sessions[sender_id] = {
@@ -129,32 +156,5 @@ def process_order(sender_id, message_text):
         # Clear the session
         del user_sessions[sender_id]
 
-@app.route('/setup', methods=['GET'])
-def setup_bot():
-    data = {
-        "get_started": {
-            "payload": "GET_STARTED"
-        },
-        "greeting": [
-            {
-                "locale": "default",
-                "text": "Вітаємо! Замовляйте свіжі яйця з доставкою! 🥚"
-            }
-        ]
-    }
-    
-    try:
-        response = requests.post(
-            "https://graph.facebook.com/v2.6/me/messenger_profile",
-            params={"access_token": os.environ["PAGE_ACCESS_TOKEN"]},
-            headers={"Content-Type": "application/json"},
-            json=data
-        )
-        if response.status_code != 200:
-            return f"Setup failed: {response.status_code} {response.text}", 500
-        return "Setup successful!", 200
-    except Exception as e:
-        return f"Setup failed: {str(e)}", 500
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
