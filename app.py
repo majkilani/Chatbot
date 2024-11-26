@@ -29,6 +29,105 @@ class PriceInfo:
         quantity_str = f" ({self.quantity} шт)" if self.quantity else ""
         return f"{self.price} грн/{self.unit}{quantity_str}"
 
+@app.route('/', methods=['GET'])
+def verify():
+    """Handle the initial verification from Facebook"""
+    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
+        if not request.args.get("hub.verify_token") == VERIFY_TOKEN:
+            return "Verification token mismatch", 403
+        return request.args["hub.challenge"], 200
+    return "Hello world", 200
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming messages"""
+    try:
+        data = request.get_json()
+        print("Raw received data:", data)  # New debug print
+        logger.debug(f"Received webhook data: {data}")
+        
+        if data["object"] == "page":
+            for entry in data["entry"]:
+                for messaging_event in entry["messaging"]:
+                    if messaging_event.get("message"):
+                        sender_id = messaging_event["sender"]["id"]
+                        logger.debug(f"Sender ID: {sender_id}")
+                        print(f"Processing message from sender: {sender_id}")  # New debug print
+                        
+                        if "text" in messaging_event["message"]:
+                            message_text = messaging_event["message"]["text"].lower()
+                            logger.debug(f"Received message: {message_text}")
+                            print(f"Raw message received: {messaging_event['message']['text']}")  # New debug print
+                            
+                            # Define price-related keywords
+                            price_keywords = {'ціна', 'прайс', 'вартість', 'почем', 'прайс-лист', 'price', 
+                                           'скільки коштує', 'почому', 'по чому', 'коштує'}
+                            
+                            # Check if any price keyword is in the message
+                            if any(keyword in message_text for keyword in price_keywords):
+                                response = get_latest_price_list()
+                                if not response or "Не вдалося отримати" in response:
+                                    # Fallback price if can't get from Facebook
+                                    response = ("🏷️ Актуальний прайс:\n\n"
+                                              "🥚 Яйця - 50-55 грн/лоток (20 шт)\n\n"
+                                              "📞 Для замовлення:\n"
+                                              "Телефон/Viber: 0953314400")
+                            else:
+                                response = get_perplexity_response(message_text)
+                            
+                            print(f"Preparing to send response: {response}")  # New debug print
+                            logger.debug(f"Response to send: {response}")
+                            
+                            if send_message(sender_id, response):
+                                logger.debug("Message sent successfully")
+                                print("Message sent successfully")  # New debug print
+                            else:
+                                logger.error("Failed to send message")
+                                print("Failed to send message")  # New debug print
+        
+        return "ok", 200
+    except Exception as e:
+        print(f"Error in webhook: {str(e)}")  # New debug print
+        logger.error(f"Error in webhook: {e}")
+        return str(e), 500
+
+def get_perplexity_response(message: str) -> str:
+    """Get response from Perplexity AI"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "mistral-7b-instruct",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant for a Ukrainian egg farm."
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+        }
+        
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            logger.error(f"Perplexity API error: {response.status_code}")
+            return "Вибачте, але я не можу зараз відповісти на ваше запитання."
+            
+    except Exception as e:
+        logger.error(f"Error getting Perplexity response: {e}")
+        return "Вибачте, але я не можу зараз відповісти на ваше запитання."
+
 def parse_price_from_standardized_post(message: str) -> Dict[str, PriceInfo]:
     """Parse price information from standardized posts"""
     price_info = {}
@@ -96,6 +195,7 @@ def get_latest_price_list():
     except Exception as e:
         logger.error(f"Error getting price list from Facebook: {e}")
         return "Не вдалося отримати актуальний прайс-лист"
+
 def send_message(recipient_id: str, message_text: str) -> bool:
     """Send message to user via Facebook Messenger"""
     try:
@@ -130,94 +230,6 @@ def send_message(recipient_id: str, message_text: str) -> bool:
     except Exception as e:
         logger.error(f"Error sending message: {e}")
         return False
-
-def get_perplexity_response(message: str) -> str:
-    """Get response from Perplexity AI"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "mistral-7b-instruct",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant for a Ukrainian egg farm."
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ]
-        }
-        
-        response = requests.post(
-            "https://api.perplexity.ai/chat/completions",
-            headers=headers,
-            json=data
-        )
-        
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        else:
-            logger.error(f"Perplexity API error: {response.status_code}")
-            return "Вибачте, але я не можу зараз відповісти на ваше запитання."
-            
-    except Exception as e:
-        logger.error(f"Error getting Perplexity response: {e}")
-        return "Вибачте, але я не можу зараз відповісти на ваше запитання."
-
-@app.route('/', methods=['GET'])
-def verify():
-    """Handle the initial verification from Facebook"""
-    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
-        if not request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return "Verification token mismatch", 403
-        return request.args["hub.challenge"], 200
-    return "Hello world", 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle incoming messages"""
-    data = request.get_json()
-    logger.debug(f"Received webhook data: {data}")
-    
-    if data["object"] == "page":
-        for entry in data["entry"]:
-            for messaging_event in entry["messaging"]:
-                if messaging_event.get("message"):
-                    sender_id = messaging_event["sender"]["id"]
-                    logger.debug(f"Sender ID: {sender_id}")
-                    
-                    if "text" in messaging_event["message"]:
-                        message_text = messaging_event["message"]["text"].lower()
-                        logger.debug(f"Received message: {message_text}")
-                        
-                        # Define price-related keywords
-                        price_keywords = {'ціна', 'прайс', 'вартість', 'почем', 'прайс-лист', 'price', 
-                                       'скільки коштує', 'почому', 'по чому', 'коштує'}
-                        
-                        # Check if any price keyword is in the message
-                        if any(keyword in message_text for keyword in price_keywords):
-                            response = get_latest_price_list()
-                            if not response or "Не вдалося отримати" in response:
-                                # Fallback price if can't get from Facebook
-                                response = ("🏷️ Актуальний прайс:\n\n"
-                                          "🥚 Яйця - 50-55 грн/лоток (20 шт)\n\n"
-                                          "📞 Для замовлення:\n"
-                                          "Телефон/Viber: 0953314400")
-                        else:
-                            response = get_perplexity_response(message_text)
-                        
-                        logger.debug(f"Response to send: {response}")
-                        
-                        if send_message(sender_id, response):
-                            logger.debug("Message sent successfully")
-                        else:
-                            logger.error("Failed to send message")
-    
-    return "ok", 200
 
 if __name__ == "__main__":
     app.run(debug=True)
