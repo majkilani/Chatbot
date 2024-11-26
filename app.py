@@ -1,12 +1,42 @@
-# Add these imports at the top with the existing ones
+import os
+from flask import Flask, request
+import requests
+from dotenv import load_dotenv
+import json
+import logging
+import re
+from typing import Dict, Optional
 from email.mime.text import MIMEText
 import smtplib
 
-# Add these environment variables after the existing ones
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+app = Flask(__name__)
+
+# Configuration variables
+VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
+PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
+PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
 EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
 EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
 
-# Add this new function after your existing functions
+# Your existing PriceInfo class
+class PriceInfo:
+    def __init__(self, price: str, unit: str, quantity: Optional[int] = None):
+        self.price = price
+        self.unit = unit
+        self.quantity = quantity
+
+    def __str__(self):
+        quantity_str = f" ({self.quantity} шт)" if self.quantity else ""
+        return f"{self.price} грн/{self.unit}{quantity_str}"
+
+# Add email sending function
 def send_email(subject, body):
     try:
         msg = MIMEText(body)
@@ -26,7 +56,9 @@ def send_email(subject, body):
         logger.error(f"Error sending email: {e}")
         return False
 
-# Modify your webhook route to include email notifications
+# Your existing functions
+[Keep all your existing functions here]
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming messages"""
@@ -44,20 +76,18 @@ def webhook():
                         message_text = messaging_event["message"]["text"].lower()
                         logger.debug(f"Received message: {message_text}")
                         
-                        # Define price-related keywords
+                        # Define keywords
                         price_keywords = {'ціна', 'прайс', 'вартість', 'почем', 'прайс-лист', 'price', 
                                        'скільки коштує', 'почому', 'по чому', 'коштує'}
-                        
-                        # Check if message contains order-related keywords
                         order_keywords = {'замовити', 'замовлення', 'купити', 'order', 'buy'}
                         
+                        # Handle order-related messages
                         if any(keyword in message_text for keyword in order_keywords):
-                            # Send email notification for orders
                             email_subject = "Нове замовлення"
                             email_body = f"Отримано нове замовлення через Facebook Messenger.\nID користувача: {sender_id}\nПовідомлення: {message_text}"
                             send_email(email_subject, email_body)
                         
-                        # Check if any price keyword is in the message
+                        # Handle price-related messages
                         if any(keyword in message_text for keyword in price_keywords):
                             response = get_latest_price_list()
                             if not response or "Не вдалося отримати" in response:
@@ -76,3 +106,15 @@ def webhook():
                             logger.error("Failed to send message")
     
     return "ok", 200
+
+@app.route('/', methods=['GET'])
+def verify():
+    """Handle the initial verification from Facebook"""
+    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
+        if not request.args.get("hub.verify_token") == VERIFY_TOKEN:
+            return "Verification token mismatch", 403
+        return request.args["hub.challenge"], 200
+    return "Hello world", 200
+
+if __name__ == "__main__":
+    app.run(debug=True)
