@@ -1,153 +1,128 @@
+from flask import Flask, request
+import requests
 import os
+from dotenv import load_dotenv
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import logging
 from datetime import datetime
-from typing import Dict
 
-# Email configuration
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USERNAME = "your-email@gmail.com"  # You need to provide your Gmail
-SMTP_PASSWORD = "your-app-password"  # You need to generate an App Password
-ADMIN_EMAIL = "majid.alkilani@gmail.com"
+# Load environment variables
+load_dotenv()
 
-class OrderState:
-    def __init__(self):
-        self.step = 'start'
-        self.quantity = None
-        self.phone = None
-        self.delivery_type = None
-        self.post_office = None
+app = Flask(__name__)
 
-user_states: Dict[str, OrderState] = {}
+# Facebook API Configuration
+PAGE_ACCESS_TOKEN = "EAAZAUKbPY0wgBO6dC79ZBtohCZBx73eaWfWw32qeIg1JQz3KKvZBMjDZBn0rOXtVoSk5uGQ7OP64V2g3DJtBhegIKCo7iT5tsmZBL2v32faqPGQgDSsZBOz0MHHKGZCTTdDUWqQ6lHOgZAG4PjcXZB9TKVBb3LoJ0NWZCLWxgOt26TRPRXDZApvfxqvQnF8H2aEEiXJlzAZCv6hdOo49wTBEWtqZCIEtZBwZDZD"
+VERIFY_TOKEN = "Verify_Token_Key"
 
-def send_admin_notification(order_details: str):
-    """Send order notification to admin via email"""
+def send_message(recipient_id, message_text):
+    """Send message to user"""
+    params = {
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": message_text
+        }
+    }
+    
+    r = requests.post("https://graph.facebook.com/v2.6/me/messages", 
+                     params=params, headers=headers, json=data)
+
+def send_order_email(message_text: str, sender_id: str):
+    """Send order details to outlook email"""
+    sender_email = os.environ.get('EMAIL_ADDRESS')
+    password = os.environ.get('EMAIL_PASSWORD')
+
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = sender_email
+    msg['Subject'] = f'New Order from Customer {sender_id}'
+
+    # Add timestamp to the order
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    body = f"""
+    New order received:
+    Time: {current_time}
+    Customer ID: {sender_id}
+    
+    Message Content:
+    {message_text}
+    """
+    msg.attach(MIMEText(body, 'plain'))
+
     try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_USERNAME
-        msg['To'] = ADMIN_EMAIL
-        msg['Subject'] = "🥚 Нове замовлення яєць"
-        
-        msg.attach(MIMEText(order_details, 'plain', 'utf-8'))
-        
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server = smtplib.SMTP('smtp.office365.com', 587)
         server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.login(sender_email, password)
         server.send_message(msg)
         server.quit()
         return True
     except Exception as e:
-        logger.error(f"Failed to send admin notification: {e}")
+        logging.error(f"Error sending email: {e}")
         return False
 
-def handle_order_flow(sender_id: str, message_text: str) -> str:
-    """Handle the ordering process flow"""
-    if sender_id not in user_states:
-        user_states[sender_id] = OrderState()
-    
-    state = user_states[sender_id]
-    message_text = message_text.strip().lower()
+@app.route("/")
+def index():
+    return "Hello World!"
 
-    if state.step == 'start':
-        state.step = 'quantity'
-        return ("Дякуємо за ваше замовлення! 🥚\n\n"
-                "Скільки лотків яєць ви бажаєте замовити?\n"
-                "(1 лоток = 20 шт)")
-
-    elif state.step == 'quantity':
-        try:
-            quantity = int(message_text)
-            if quantity <= 0:
-                return "Будь ласка, введіть правильну кількість лотків (більше 0)"
-            state.quantity = quantity
-            state.step = 'phone'
-            return ("Введіть, будь ласка, ваш номер телефону у форматі:\n"
-                   "0971234567")
-
-        except ValueError:
-            return "Будь ласка, введіть число (кількість лотків)"
-
-    elif state.step == 'phone':
-        if re.match(r'^(?:\+?38)?0\d{9}$', message_text.replace(' ', '')):
-            state.phone = message_text
-            state.step = 'delivery'
-            return ("Оберіть спосіб доставки:\n\n"
-                   "1 - Нова Пошта\n"
-                   "2 - Укрпошта")
-        else:
-            return "Будь ласка, введіть правильний номер телефону (наприклад: 0971234567)"
-
-    elif state.step == 'delivery':
-        if message_text == '1':
-            state.delivery_type = 'Нова Пошта'
-        elif message_text == '2':
-            state.delivery_type = 'Укрпошта'
-        else:
-            return "Будь ласка, виберіть 1 (Нова Пошта) або 2 (Укрпошта)"
-        
-        state.step = 'post_office'
-        return f"Введіть номер відділення {state.delivery_type}:"
-
-    elif state.step == 'post_office':
-        state.post_office = message_text
-        
-        # Create order details for admin
-        order_details = (
-            "🥚 НОВЕ ЗАМОВЛЕННЯ!\n\n"
-            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
-            f"Телефон: {state.phone}\n"
-            f"Доставка: {state.delivery_type}\n"
-            f"Відділення: {state.post_office}\n"
-            f"ID користувача: {sender_id}\n"
-            f"Час замовлення: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        
-        # Send notification to admin
-        if send_admin_notification(order_details):
-            logger.info("Admin notification sent successfully")
-        else:
-            logger.error("Failed to send admin notification")
-
-        # Response to customer
-        customer_response = (
-            "🥚 Ваше замовлення:\n\n"
-            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
-            f"Телефон: {state.phone}\n"
-            f"Доставка: {state.delivery_type}\n"
-            f"Відділення: {state.post_office}\n\n"
-            "Ми зв'яжемося з вами найближчим часом для підтвердження замовлення!\n"
-            "Дякуємо, що обрали нас! 🙏"
-        )
-        
-        # Reset the state
-        del user_states[sender_id]
-        return customer_response
-
-    return "Щось пішло не так. Спробуйте почати замовлення знову."
-
-# Update your webhook function to include order handling
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
-    data = request.get_json()
-    
-    if data["object"] == "page":
-        for entry in data["entry"]:
-            for messaging_event in entry["messaging"]:
-                if messaging_event.get("message"):
-                    sender_id = messaging_event["sender"]["id"]
-                    
-                    if "text" in messaging_event["message"]:
-                        message_text = messaging_event["message"]["text"].lower()
+    if request.method == 'GET':
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        
+        if mode and token:
+            if mode == "subscribe" and token == VERIFY_TOKEN:
+                return challenge
+            else:
+                return "403 Forbidden", 403
+
+    if request.method == 'POST':
+        data = request.get_json()
+        if data["object"] == "page":
+            for entry in data["entry"]:
+                for messaging_event in entry["messaging"]:
+                    if messaging_event.get("message"):
+                        sender_id = messaging_event["sender"]["id"]
+                        message_text = messaging_event["message"].get("text", "").lower()
+
+                        # Order keywords
+                        order_keywords = {'замовити', 'замовлення', 'купити', 'order', 'buy'}
                         
-                        # Handle price request
-                        if any(keyword in message_text for keyword in ['ціна', 'прайс', 'вартість', 'замовити']):
-                            response = get_latest_price_list()
+                        # Price keywords
+                        price_keywords = {'ціна', 'прайс', 'вартість', 'price', 'cost'}
+
+                        response = ""
+                        
+                        # Check for order keywords
+                        if any(keyword in message_text for keyword in order_keywords):
+                            if send_order_email(message_text, sender_id):
+                                response = "Дякуємо за замовлення! Ми зв'яжемося з вами найближчим часом."
+                            else:
+                                response = "Вибачте, виникла помилка при обробці замовлення. Будь ласка, спробуйте пізніше."
+                        
+                        # Check for price keywords
+                        elif any(keyword in message_text for keyword in price_keywords):
+                            response = "Ось наш прайс-лист:\n1. Товар A - 100 грн\n2. Товар B - 200 грн"
+                        
+                        # Default response
                         else:
-                            # Handle order flow
-                            response = handle_order_flow(sender_id, message_text)
-                        
+                            response = "Вітаємо! Чим можемо допомогти? Напишіть 'ціна' для перегляду прайс-листа або 'замовити' для оформлення замовлення."
+
                         send_message(sender_id, response)
-                        
-    return "ok", 200
+
+        return "ok", 200
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
