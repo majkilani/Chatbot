@@ -117,4 +117,115 @@ def webhook():
         logger.error(f"Error in webhook: {e}")
         return str(e), 500
 
-[Rest of the code remains exactly the same...]
+def get_latest_price_list() -> str:
+    """Get the latest price list from the Facebook page"""
+    try:
+        url = f"https://graph.facebook.com/v17.0/me/feed"
+        params = {
+            "access_token": PAGE_ACCESS_TOKEN,
+            "fields": "message,created_time",
+            "limit": 100
+        }
+        
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            logger.error(f"Failed to get posts. Status code: {response.status_code}")
+            return None
+            
+        posts = response.json().get("data", [])
+        price_list = None
+        
+        for post in posts:
+            message = post.get("message", "").lower()
+            if "прайс" in message or "ціна" in message or "цін" in message:
+                price_list = post["message"]
+                break
+                
+        if price_list:
+            return price_list
+        else:
+            return "Не вдалося отримати актуальний прайс. Будь ласка, зателефонуйте нам."
+            
+    except Exception as e:
+        logger.error(f"Error getting price list: {e}")
+        return None
+
+def send_message(recipient_id: str, message_text: str) -> bool:
+    """Send a message to a recipient"""
+    try:
+        params = {
+            "access_token": PAGE_ACCESS_TOKEN
+        }
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = {
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "text": message_text
+            }
+        }
+        
+        response = requests.post(
+            "https://graph.facebook.com/v17.0/me/messages",
+            params=params,
+            headers=headers,
+            data=json.dumps(data)
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to send message. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        return False
+
+def get_perplexity_response(message: str) -> str:
+    """Get a response from Perplexity API"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "mistral-7b-instruct",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": ("You are a helpful assistant for a chicken egg farm. "
+                              "Provide concise, friendly responses. "
+                              "If you're not sure about something, suggest contacting the farm directly. "
+                              "For orders or specific questions, provide the farm's phone number: 0953314400")
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+        }
+        
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=data
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Perplexity API error. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return "Вибачте, але я не можу зараз відповісти. Будь ласка, зателефонуйте нам: 0953314400"
+            
+        response_data = response.json()
+        return response_data['choices'][0]['message']['content']
+        
+    except Exception as e:
+        logger.error(f"Error getting Perplexity response: {e}")
+        return "Вибачте, але я не можу зараз відповісти. Будь ласка, зателефонуйте нам: 0953314400"
+
+if __name__ == "__main__":
+    app.run(debug=True)
