@@ -4,19 +4,23 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-from typing import Dict
+from flask import Flask, request, jsonify
+import requests
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+app = Flask(__name__)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Email configuration
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USERNAME = "majid.alkilani@gmail.com"  # Replace with your Gmail
-SMTP_PASSWORD = "alusaimi2018"  # Replace with your App Password
-ADMIN_EMAIL = "majid.alkilani@gmail.com"
+# Load environment variables
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "default_key_if_not_set")
 
 class OrderState:
     def __init__(self):
@@ -26,18 +30,23 @@ class OrderState:
         self.delivery_type = None
         self.post_office = None
 
-user_states: Dict[str, OrderState] = {}
+user_states = {}
 
-def send_message(sender_id: str, message: str):
-    """Send message to user via Facebook Messenger API"""
-    # Placeholder for actual API call
-    logger.info(f"Message sent to {sender_id}: {message}")
+def send_message(sender_id, message):
+    """Send a response back to the user"""
+    # Implement your function to send the message. Example using the API:
+    response_url = f"https://graph.facebook.com/v13.0/me/messages?access_token={os.getenv('PAGE_ACCESS_TOKEN')}"
+    payload = {
+        "recipient": {"id": sender_id},
+        "message": {"text": message}
+    }
+    try:
+        response = requests.post(response_url, json=payload)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"Error while sending message to user: {e}")
 
-def get_latest_price_list():
-    """Return the latest price list"""
-    return "Ось наш прайс-лист:\n\n1 лоток яєць - 100 грн\n\n"
-
-def send_admin_notification(order_details: str) -> bool:
+def send_admin_notification(order_details: str):
     """Send order notification to admin via email"""
     try:
         msg = MIMEMultipart()
@@ -47,15 +56,33 @@ def send_admin_notification(order_details: str) -> bool:
         
         msg.attach(MIMEText(order_details, 'plain', 'utf-8'))
         
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
         return True
     except Exception as e:
         logger.error(f"Failed to send admin notification: {e}")
         return False
+
+def get_ai_response(prompt):
+    """Call Perplexity AI API for a response"""
+    url = 'the_perplexity_api_endpoint'  # Replace with actual API endpoint
+    headers = {
+        'Authorization': f'Bearer {PERPLEXITY_API_KEY}'
+    }
+    data = {
+        "input": {
+            "text": prompt
+        }
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=5)  # Set timeout to ensure quick response
+        response.raise_for_status()  # Raise an exception for non-2xx status codes
+        return response.json()['response']['text']
+    except requests.RequestException as e:
+        logger.error(f"Perplexity AI API request failed: {e}")
+        return "There seems to be an issue with the AI service. Please try again later."
 
 def handle_order_flow(sender_id: str, message_text: str) -> str:
     """Handle the ordering process flow"""
@@ -65,15 +92,11 @@ def handle_order_flow(sender_id: str, message_text: str) -> str:
     state = user_states[sender_id]
     message_text = message_text.strip().lower()
 
-    # Check for order initiation keywords
-    if state.step == 'start' or any(keyword in message_text for keyword in ['замовити', 'order', 'make order', 'замовлення']):
-        if any(keyword in message_text for keyword in ['ціна', 'прайс', 'вартість']):
-            return get_latest_price_list()
+    if state.step == 'start':
         state.step = 'quantity'
         return ("Дякуємо за ваше замовлення! 🥚\n\n"
                 "Скільки лотків яєць ви бажаєте замовити?\n"
                 "(1 лоток = 20 шт)")
-
     elif state.step == 'quantity':
         try:
             quantity = int(message_text)
@@ -82,11 +105,9 @@ def handle_order_flow(sender_id: str, message_text: str) -> str:
             state.quantity = quantity
             state.step = 'phone'
             return ("Введіть, будь ласка, ваш номер телефону у форматі:\n"
-                    "0971234567")
-
+                   "0971234567")
         except ValueError:
             return "Будь ласка, введіть число (кількість лотків)"
-
     elif state.step == 'phone':
         if re.match(r'^(?:\+?38)?0\d{9}$', message_text.replace(' ', '')):
             state.phone = message_text
@@ -96,7 +117,6 @@ def handle_order_flow(sender_id: str, message_text: str) -> str:
                    "2 - Укрпошта")
         else:
             return "Будь ласка, введіть правильний номер телефону (наприклад: 0971234567)"
-
     elif state.step == 'delivery':
         if message_text == '1':
             state.delivery_type = 'Нова Пошта'
@@ -107,7 +127,6 @@ def handle_order_flow(sender_id: str, message_text: str) -> str:
         
         state.step = 'post_office'
         return f"Введіть номер відділення {state.delivery_type}:"
-
     elif state.step == 'post_office':
         state.post_office = message_text
         
@@ -142,32 +161,45 @@ def handle_order_flow(sender_id: str, message_text: str) -> str:
         # Reset the state
         del user_states[sender_id]
         return customer_response
+    else:
+        return "Щось пішло не так. Спробуйте почати замовлення знову."
 
-    return "Щось пішло не так. Спробуйте почати замовлення знову."
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    """Webhook Verification"""
+    hub_mode = request.args.get('hub.mode')
+    hub_verify_token = request.args.get('hub.verify_token')
+    if hub_mode == 'subscribe' and hub_verify_token == os.getenv('VERIFY_TOKEN'):
+        return request.args.get('hub.challenge'), 200
+    else:
+        return 'Verification Token Mismatch', 403
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
-    
-    if data["object"] == "page":
-        for entry in data["entry"]:
-            for messaging_event in entry["messaging"]:
-                if messaging_event.get("message"):
-                    sender_id = messaging_event["sender"]["id"]
-                    
-                    if "text" in messaging_event["message"]:
-                        message_text = messaging_event["message"]["text"].lower()
-                        
-                        # Handle price request
-                        if any(keyword in message_text for keyword in ['ціна', 'прайс', 'вартість', 'замовити']):
-                            response = get_latest_price_list()
-                        else:
-                            # Handle order flow
-                            response = handle_order_flow(sender_id, message_text)
-                        
-                        send_message(sender_id, response)
-                        
-    return "ok", 200
+    """Process incoming messages"""
+    data = request.json
+    try:
+        messaging_events = data['entry'][0]['messaging']
+        for event in messaging_events:
+            if event.get('message'):
+                sender_id = event['sender']['id']
+                user_input = event['message'].get('text')
+                # Process message
+                if user_input and user_input.lower() in ['добрий день', 'hello']:
+                    bot_response = get_ai_response(user_input)
+                    send_message(sender_id, bot_response)
+                else:
+                    # Handle order flow
+                    response = handle_order_flow(sender_id, user_input)
+                    send_message(sender_id, response)
+        return "EVENT_RECEIVED", 200
+    except KeyError:
+        logger.error("Key Error in incoming data")
+        return "Invalid input request.", 400
+    except Exception as e:
+        logger.error(f"Webhooking processing error: {e}")
+        return "Processing error", 500
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    port = int(os.environ.get('PORT', '5000'))  # Render dynamically sets ports
+    app.run(host='0.0.0.0', port=port)
