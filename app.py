@@ -1,231 +1,173 @@
 import os
-from flask import Flask, request
-import requests
-from dotenv import load_dotenv
-import json
-import logging
 import re
-from typing import Dict, Optional
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+from typing import Dict
+import logging
 
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Email configuration
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USERNAME = "majid.alkilani@gmail.com"  # Replace with your Gmail
+SMTP_PASSWORD = "alusaimi2018"  # Replace with your App Password
+ADMIN_EMAIL = "majid.alkilani@gmail.com"
 
-app = Flask(__name__)
+class OrderState:
+    def __init__(self):
+        self.step = 'start'
+        self.quantity = None
+        self.phone = None
+        self.delivery_type = None
+        self.post_office = None
 
-VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
-PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
-PERPLEXITY_API_KEY = os.environ.get('PERPLEXITY_API_KEY')
+user_states: Dict[str, OrderState] = {}
 
-class PriceInfo:
-    def __init__(self, price: str, unit: str, quantity: Optional[int] = None):
-        self.price = price
-        self.unit = unit
-        self.quantity = quantity
+def send_message(sender_id: str, message: str):
+    """Send message to user via Facebook Messenger API"""
+    # Placeholder for actual API call
+    logger.info(f"Message sent to {sender_id}: {message}")
 
-    def __str__(self):
-        quantity_str = f" ({self.quantity} шт)" if self.quantity else ""
-        return f"{self.price} грн/{self.unit}{quantity_str}"
+def get_latest_price_list():
+    """Return the latest price list"""
+    return "Ось наш прайс-лист:\n\n1 лоток яєць - 100 грн\n\n"
 
-@app.route('/', methods=['GET'])
-def verify():
-    """Handle the initial verification from Facebook"""
-    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
-        if not request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return "Verification token mismatch", 403
-        return request.args["hub.challenge"], 200
-    return "Hello world", 200
+def send_admin_notification(order_details: str) -> bool:
+    """Send order notification to admin via email"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = ADMIN_EMAIL
+        msg['Subject'] = "🥚 Нове замовлення яєць"
+        
+        msg.attach(MIMEText(order_details, 'plain', 'utf-8'))
+        
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send admin notification: {e}")
+        return False
+
+def handle_order_flow(sender_id: str, message_text: str) -> str:
+    """Handle the ordering process flow"""
+    if sender_id not in user_states:
+        user_states[sender_id] = OrderState()
+    
+    state = user_states[sender_id]
+    message_text = message_text.strip().lower()
+
+    # Check for order initiation keywords
+    if state.step == 'start' or any(keyword in message_text for keyword in ['замовити', 'order', 'make order', 'замовлення']):
+        if any(keyword in message_text for keyword in ['ціна', 'прайс', 'вартість']):
+            return get_latest_price_list()
+        state.step = 'quantity'
+        return ("Дякуємо за ваше замовлення! 🥚\n\n"
+                "Скільки лотків яєць ви бажаєте замовити?\n"
+                "(1 лоток = 20 шт)")
+
+    elif state.step == 'quantity':
+        try:
+            quantity = int(message_text)
+            if quantity <= 0:
+                return "Будь ласка, введіть правильну кількість лотків (більше 0)"
+            state.quantity = quantity
+            state.step = 'phone'
+            return ("Введіть, будь ласка, ваш номер телефону у форматі:\n"
+                    "0971234567")
+
+        except ValueError:
+            return "Будь ласка, введіть число (кількість лотків)"
+
+    elif state.step == 'phone':
+        if re.match(r'^(?:\+?38)?0\d{9}$', message_text.replace(' ', '')):
+            state.phone = message_text
+            state.step = 'delivery'
+            return ("Оберіть спосіб доставки:\n\n"
+                   "1 - Нова Пошта\n"
+                   "2 - Укрпошта")
+        else:
+            return "Будь ласка, введіть правильний номер телефону (наприклад: 0971234567)"
+
+    elif state.step == 'delivery':
+        if message_text == '1':
+            state.delivery_type = 'Нова Пошта'
+        elif message_text == '2':
+            state.delivery_type = 'Укрпошта'
+        else:
+            return "Будь ласка, виберіть 1 (Нова Пошта) або 2 (Укрпошта)"
+        
+        state.step = 'post_office'
+        return f"Введіть номер відділення {state.delivery_type}:"
+
+    elif state.step == 'post_office':
+        state.post_office = message_text
+        
+        # Create order details for admin
+        order_details = (
+            "🥚 НОВЕ ЗАМОВЛЕННЯ!\n\n"
+            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
+            f"Телефон: {state.phone}\n"
+            f"Доставка: {state.delivery_type}\n"
+            f"Відділення: {state.post_office}\n"
+            f"ID користувача: {sender_id}\n"
+            f"Час замовлення: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        # Send notification to admin
+        if send_admin_notification(order_details):
+            logger.info("Admin notification sent successfully")
+        else:
+            logger.error("Failed to send admin notification")
+
+        # Response to customer
+        customer_response = (
+            "🥚 Ваше замовлення:\n\n"
+            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
+            f"Телефон: {state.phone}\n"
+            f"Доставка: {state.delivery_type}\n"
+            f"Відділення: {state.post_office}\n\n"
+            "Ми зв'яжемося з вами найближчим часом для підтвердження замовлення!\n"
+            "Дякуємо, що обрали нас! 🙏"
+        )
+        
+        # Reset the state
+        del user_states[sender_id]
+        return customer_response
+
+    return "Щось пішло не так. Спробуйте почати замовлення знову."
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Handle incoming messages"""
-    try:
-        data = request.get_json()
-        print("Raw received data:", data)
-        logger.debug(f"Received webhook data: {data}")
-        
-        if data["object"] == "page":
-            for entry in data["entry"]:
-                for messaging_event in entry["messaging"]:
-                    if messaging_event.get("message"):
-                        sender_id = messaging_event["sender"]["id"]
-                        logger.debug(f"Sender ID: {sender_id}")
-                        print(f"Processing message from sender: {sender_id}")
+    data = request.get_json()
+    
+    if data["object"] == "page":
+        for entry in data["entry"]:
+            for messaging_event in entry["messaging"]:
+                if messaging_event.get("message"):
+                    sender_id = messaging_event["sender"]["id"]
+                    
+                    if "text" in messaging_event["message"]:
+                        message_text = messaging_event["message"]["text"].lower()
                         
-                        if "text" in messaging_event["message"]:
-                            message_text = messaging_event["message"]["text"].lower()
-                            logger.debug(f"Received message: {message_text}")
-                            print(f"Raw message received: {messaging_event['message']['text']}")
-                            
-                            # Expanded multilingual price keywords
-                            price_keywords = {
-                                # Ukrainian
-                                'ціна', 'прайс', 'вартість', 'почем', 'прайс-лист', 'скільки коштує', 
-                                'почому', 'по чому', 'коштує', 'ціни', 'прайслист', 'вартiсть',
-                                # English
-                                'price', 'cost', 'how much', 'pricing', 'price list', 'pricelist', 
-                                'prices', 'costs', 'rate', 'charge', 'fee', 'amount',
-                                # Russian
-                                'цена', 'стоимость', 'прайс', 'сколько стоит', 'цены', 'стоимость', 
-                                'прайс-лист', 'прайслист', 'почем', 'по чем',
-                                # Polish
-                                'cena', 'koszt', 'ile kosztuje', 'cennik', 'ceny', 'koszty', 
-                                'ile kosztują', 'po ile',
-                                # German
-                                'preis', 'kosten', 'wie viel kostet', 'preisliste', 'preise', 
-                                'wie viel', 'wieviel kostet',
-                                # French
-                                'prix', 'coût', 'combien ça coûte', 'tarif', 'tarifs', 'liste des prix',
-                                'combien coûte', 'coûts',
-                                # Spanish
-                                'precio', 'cuánto cuesta', 'cuanto', 'lista de precios', 'precios', 
-                                'cuánto vale', 'tarifa',
-                                # Italian
-                                'prezzo', 'quanto costa', 'listino prezzi', 'prezzi', 'costo', 
-                                'quanto viene',
-                                # Romanian
-                                'preț', 'cât costă', 'lista de prețuri', 'prețuri', 'cost', 'tarif'
-                            }
-                            
-                            # Check if any price keyword is in the message
-                            if any(keyword in message_text for keyword in price_keywords):
-                                response = get_latest_price_list()
-                                if not response or "Не вдалося отримати" in response:
-                                    # Fallback price if can't get from Facebook
-                                    response = ("🏷️ Актуальний прайс:\n\n"
-                                              "🥚 Яйця - 50-55 грн/лоток (20 шт)\n\n"
-                                              "📞 Для замовлення:\n"
-                                              "Телефон/Viber: 0953314400")
-                            else:
-                                response = get_perplexity_response(message_text)
-                            
-                            print(f"Preparing to send response: {response}")
-                            logger.debug(f"Response to send: {response}")
-                            
-                            if send_message(sender_id, response):
-                                logger.debug("Message sent successfully")
-                                print("Message sent successfully")
-                            else:
-                                logger.error("Failed to send message")
-                                print("Failed to send message")
-        
-        return "ok", 200
-    except Exception as e:
-        print(f"Error in webhook: {str(e)}")
-        logger.error(f"Error in webhook: {e}")
-        return str(e), 500
-
-def get_latest_price_list() -> str:
-    """Get the latest price list from the Facebook page"""
-    try:
-        url = f"https://graph.facebook.com/v17.0/me/feed"
-        params = {
-            "access_token": PAGE_ACCESS_TOKEN,
-            "fields": "message,created_time",
-            "limit": 100
-        }
-        
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            logger.error(f"Failed to get posts. Status code: {response.status_code}")
-            return None
-            
-        posts = response.json().get("data", [])
-        price_list = None
-        
-        for post in posts:
-            message = post.get("message", "").lower()
-            if "прайс" in message or "ціна" in message or "цін" in message:
-                price_list = post["message"]
-                break
-                
-        if price_list:
-            return price_list
-        else:
-            return "Не вдалося отримати актуальний прайс. Будь ласка, зателефонуйте нам."
-            
-    except Exception as e:
-        logger.error(f"Error getting price list: {e}")
-        return None
-
-def send_message(recipient_id: str, message_text: str) -> bool:
-    """Send a message to a recipient"""
-    try:
-        params = {
-            "access_token": PAGE_ACCESS_TOKEN
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = {
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "text": message_text
-            }
-        }
-        
-        response = requests.post(
-            "https://graph.facebook.com/v17.0/me/messages",
-            params=params,
-            headers=headers,
-            data=json.dumps(data)
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Failed to send message. Status code: {response.status_code}")
-            logger.error(f"Response: {response.text}")
-            return False
-            
-        return True
-    except Exception as e:
-        logger.error(f"Error sending message: {e}")
-        return False
-
-def get_perplexity_response(message: str) -> str:
-    """Get a response from Perplexity API"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "mistral-7b-instruct",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": ("You are a helpful assistant for a chicken egg farm. "
-                              "Provide concise, friendly responses. "
-                              "If you're not sure about something, suggest contacting the farm directly. "
-                              "For orders or specific questions, provide the farm's phone number: 0953314400")
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ]
-        }
-        
-        response = requests.post(
-            "https://api.perplexity.ai/chat/completions",
-            headers=headers,
-            json=data
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Perplexity API error. Status code: {response.status_code}")
-            logger.error(f"Response: {response.text}")
-            return "Вибачте, але я не можу зараз відповісти. Будь ласка, зателефонуйте нам: 0953314400"
-            
-        response_data = response.json()
-        return response_data['choices'][0]['message']['content']
-        
-    except Exception as e:
-        logger.error(f"Error getting Perplexity response: {e}")
-        return "Вибачте, але я не можу зараз відповісти. Будь ласка, зателефонуйте нам: 0953314400"
+                        # Handle price request
+                        if any(keyword in message_text for keyword in ['ціна', 'прайс', 'вартість', 'замовити']):
+                            response = get_latest_price_list()
+                        else:
+                            # Handle order flow
+                            response = handle_order_flow(sender_id, message_text)
+                        
+                        send_message(sender_id, response)
+                        
+    return "ok", 200
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5000)
