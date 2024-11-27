@@ -1,8 +1,21 @@
 import os
 import requests
 import re
-from flask import Flask, request, jsonify
-from datetime import datetime
+from flask import Flask
+
+app = Flask(__name__)
+# Hardcoding SECRET_KEY for development or in a situation where you're not ready to use environment variables
+app.secret_key = 'this-is-a-really-secret-key-and-you-should-not-use-this-in-production-really-very-secret'
+
+# Your application's routes and other configurations would go here...
+
+@app.route('/')
+def hello_world():
+    return 'Hello, World!'
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
