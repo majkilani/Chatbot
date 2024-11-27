@@ -1,205 +1,156 @@
-import os
-import re
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, session, jsonify
+from flask_restful import Resource, Api, abort, reqparse
+from functools import lru_cache
 import requests
+import os
 import logging
+from dotenv import load_dotenv
+import random
+
+API_NAME = 'EggsCom'
+load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24))
+api = Api(app)
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+PERPLEXITY_API_KEY = os.environ.get('PERPLEXITY_API_KEY', 'default-key-if-not-set')
+PERPLEXITY_ENDPOINT = os.environ.get('PERPLEXITY_ENDPOINT', 'https://api.perplexity.ai/chat/completions')
+ 
+# Logging setup
+log_format = logging.Formatter('[%(asctime)s] %(levelname)s|%(method)s (%(host)s) %(message)s')
+log_handler = logging.StreamHandler()
+log_handler.setFormatter(log_format)
+app.logger.handlers = log_handler
+app.logger.addHandler(log_handler)
+app.logger.setLevel(logging.INFO)
 
-# Load environment variables
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
-PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "default_key_if_not_set")
+# Cache for non-api messages
+non_api_messages = {
+    'hello': "Доброго дня! Як я можу допомогти вам з вашими яйцями сьогодні?",
+    'good work': "Дякую, я стараюсь бути найдопомоговим ботом для вас! ✨ Вас зацікавили яйця? Ось кілька опцілей для вас:",
+    'goodbye': "Бувайте! Зв'яжіться з нами знову, якщо у вас будуть будь-які запитання..."
+}
 
-class OrderState:
+class UserConversation:
     def __init__(self):
-        self.step = 'start'
-        self.quantity = None
-        self.phone = None
-        self.delivery_type = None
-        self.post_office = None
+        self.context = None
+        self.last_message = None
+        self.ordering_data = {}
 
-user_states = {}
+user_conversations = {}
 
-def send_message(sender_id, message):
-    """Send a response back to the user"""
-    # Implement your function to send the message. Example using the API:
-    response_url = f"https://graph.facebook.com/v13.0/me/messages?access_token={os.getenv('PAGE_ACCESS_TOKEN')}"
-    payload = {
-        "recipient": {"id": sender_id},
-        "message": {"text": message}
-    }
-    try:
-        response = requests.post(response_url, json=payload)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Error while sending message to user: {e}")
+def generate_otp():
+    return format(random.randint(100000, 999999), '06d')
 
-def send_admin_notification(order_details: str):
-    """Send order notification to admin via email"""
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_USERNAME
-        msg['To'] = ADMIN_EMAIL
-        msg['Subject'] = "🥚 Нове замовлення яєць"
-        
-        msg.attach(MIMEText(order_details, 'plain', 'utf-8'))
-        
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send admin notification: {e}")
-        return False
+def send_otp(phone, otp):
+    # Implement SMS functionality or log the OTP
+    app.logger.info(f'Send OTP {otp} to {phone}')
 
-def get_ai_response(prompt):
-    """Call Perplexity AI API for a response"""
-    url = 'the_perplexity_api_endpoint'  # Replace with actual API endpoint
-    headers = {
-        'Authorization': f'Bearer {PERPLEXITY_API_KEY}'
-    }
-    data = {
-        "input": {
-            "text": prompt
-        }
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=5)  # Set timeout to ensure quick response
-        response.raise_for_status()  # Raise an exception for non-2xx status codes
-        return response.json()['response']['text']
-    except requests.RequestException as e:
-        logger.error(f"Perplexity AI API request failed: {e}")
-        return "There seems to be an issue with the AI service. Please try again later."
+@lru_cache(maxsize=200)
+def get_cached_menu():
+    return 'Наше меню включає ...' # Placeholder
 
-def handle_order_flow(sender_id: str, message_text: str) -> str:
-    """Handle the ordering process flow"""
-    if sender_id not in user_states:
-        user_states[sender_id] = OrderState()
+@lru_cache(maxsize=100)
+def perplexity(message):
+    if not PERPLEXITY_API_KEY:
+        app.logger.warning("Perplexity API key not set.")
+        return "Sorry, the AI service is currently unavailable."
     
-    state = user_states[sender_id]
-    message_text = message_text.strip().lower()
+    data = {"message": message}
+    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}"}
+    
+    try:
+        response = requests.post(PERPLEXITY_ENDPOINT, headers=headers, json=data)
+        response.raise_for_status()
+        response_json = response.json()
+        return response_json.get('completions', [{}]).get('text')
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"An error occurred when accessing the Perplexity API: {e}")
+        return "Sorry, there was an error processing your request."
 
-    if state.step == 'start':
-        state.step = 'quantity'
-        return ("Дякуємо за ваше замовлення! 🥚\n\n"
-                "Скільки лотків яєць ви бажаєте замовити?\n"
-                "(1 лоток = 20 шт)")
-    elif state.step == 'quantity':
-        try:
-            quantity = int(message_text)
-            if quantity <= 0:
-                return "Будь ласка, введіть правильну кількість лотків (більше 0)"
-            state.quantity = quantity
-            state.step = 'phone'
-            return ("Введіть, будь ласка, ваш номер телефону у форматі:\n"
-                   "0971234567")
-        except ValueError:
-            return "Будь ласка, введіть число (кількість лотків)"
-    elif state.step == 'phone':
-        if re.match(r'^(?:\+?38)?0\d{9}$', message_text.replace(' ', '')):
-            state.phone = message_text
-            state.step = 'delivery'
-            return ("Оберіть спосіб доставки:\n\n"
-                   "1 - Нова Пошта\n"
-                   "2 - Укрпошта")
+def prompt_user(state):
+    if state.context == 'order_in_progress':
+        if 'amount' not in state.ordering_data:
+            return 'Скільки яєць ви бажаєте замовити? Будь ласка, введіть кількість.'
+        elif not state.ordering_data.get('address'):
+            return 'Будь ласка, введіть вашу адресу доставки.'
         else:
-            return "Будь ласка, введіть правильний номер телефону (наприклад: 0971234567)"
-    elif state.step == 'delivery':
-        if message_text == '1':
-            state.delivery_type = 'Нова Пошта'
-        elif message_text == '2':
-            state.delivery_type = 'Укрпошта'
-        else:
-            return "Будь ласка, виберіть 1 (Нова Пошта) або 2 (Укрпошта)"
-        
-        state.step = 'post_office'
-        return f"Введіть номер відділення {state.delivery_type}:"
-    elif state.step == 'post_office':
-        state.post_office = message_text
-        
-        # Create order details for admin
-        order_details = (
-            "🥚 НОВЕ ЗАМОВЛЕННЯ!\n\n"
-            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
-            f"Телефон: {state.phone}\n"
-            f"Доставка: {state.delivery_type}\n"
-            f"Відділення: {state.post_office}\n"
-            f"ID користувача: {sender_id}\n"
-            f"Час замовлення: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        
-        # Send notification to admin
-        if send_admin_notification(order_details):
-            logger.info("Admin notification sent successfully")
-        else:
-            logger.error("Failed to send admin notification")
+            return 'Ваше замовлення оформлене. Дякуємо!'
 
-        # Response to customer
-        customer_response = (
-            "🥚 Ваше замовлення:\n\n"
-            f"Кількість лотків: {state.quantity} (по 20 шт)\n"
-            f"Телефон: {state.phone}\n"
-            f"Доставка: {state.delivery_type}\n"
-            f"Відділення: {state.post_office}\n\n"
-            "Ми зв'яжемося з вами найближчим часом для підтвердження замовлення!\n"
-            "Дякуємо, що обрали нас! 🙏"
-        )
-        
-        # Reset the state
-        del user_states[sender_id]
-        return customer_response
+def authenticate_change(sender_id):
+    if sender_id not in session:
+        session[sender_id] = UserConversation(phone=None)
+    session[sender_id].otp = generate_otp()
+    phone = user_conversations.get(sender_id, {}).get('phone')
+    if phone:
+        send_otp(phone, session[sender_id].otp)
     else:
-        return "Щось пішло не так. Спробуйте почати замовлення знову."
-
-@app.route('/webhook', methods=['GET'])
-def verify_webhook():
-    """Webhook Verification"""
-    hub_mode = request.args.get('hub.mode')
-    hub_verify_token = request.args.get('hub.verify_token')
-    if hub_mode == 'subscribe' and hub_verify_token == os.getenv('VERIFY_TOKEN'):
-        return request.args.get('hub.challenge'), 200
-    else:
-        return 'Verification Token Mismatch', 403
+        app.logger.error(f'Trying to send OTP without user phone number for sender ID: {sender_id}')
+    return "Ми відправили OTP на ваш номер телефону. Будь ласка, введіть його тут:"
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    """Process incoming messages"""
+def callback_handler():
     data = request.json
-    try:
-        messaging_events = data['entry'][0]['messaging']
-        for event in messaging_events:
-            if event.get('message'):
-                sender_id = event['sender']['id']
-                user_input = event['message'].get('text')
-                # Process message
-                if user_input and user_input.lower() in ['добрий день', 'hello']:
-                    bot_response = get_ai_response(user_input)
-                    send_message(sender_id, bot_response)
-                else:
-                    # Handle order flow
-                    response = handle_order_flow(sender_id, user_input)
-                    send_message(sender_id, response)
-        return "EVENT_RECEIVED", 200
-    except KeyError:
-        logger.error("Key Error in incoming data")
-        return "Invalid input request.", 400
-    except Exception as e:
-        logger.error(f"Webhooking processing error: {e}")
-        return "Processing error", 500
+    sender_id = data['entry'][0]['messaging'][0].get('sender', {}).get('id')
+    event = data['entry'][0]['messaging'][0]
+    message = event.get('message', {}).get('text')
 
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', '5000'))  # Render dynamically sets ports
-    app.run(host='0.0.0.0', port=port)
+    if sender_id not in user_conversations:
+        user_conversations[sender_id] = UserConversation()
+
+    state = user_conversations[sender_id]
+    
+    # Log incoming message
+    app.logger.info(f'Received message from user {sender_id}: {message}')
+    
+    if message.lower() == 'menu':
+        response = get_cached_menu()
+        send_message(sender_id, response)
+        return jsonify(success=True)
+
+    elif message in non_api_messages:
+        send_message(sender_id, non_api_messages[message])
+        return jsonify(success=True)
+
+    elif message.lower() == 'добре':
+        response = {
+            "text": prompt_user(state),
+            "quick_replies": [
+                {"type": "postback", "title": "Замовити", "payload": "PLACE_ORDER"},
+                {"type": "postback", "title": "Запитати ще щось", "payload": "ASK_MORE"}
+            ]
+        }
+        send_message(sender_id, response)
+        return jsonify(success=True)
+
+    elif state.context == 'order_in_progress':
+        if message.isdigit() and 'amount' not in state.ordering_data:
+            state.ordering_data['amount'] = int(message)
+            message = prompt_user(state)
+        elif 'address' not in state.ordering_data:
+            state.ordering_data['address'] = message
+            message = 'Ваше замовлення прийнято в роботу. Ми зв'яжемося з вами, коли замовлення буде готове до доставки.'
+        
+        send_message(sender_id, {"text": message})
+
+    else:
+        response_text = perplexity(message.strip())
+        send_message(sender_id, response_text)
+
+    return jsonify(success=True)
+
+def send_message(sender, message):
+    app.logger.info(f"Sending message from {API_NAME}: {message}")
+    # Here you'd actually send the message to the messaging platform
+        
+@app.errorhandler(404)
+def not_found(error):
+    # Log the error
+    app.logger.error(f"404 {request.path}")
+    return jsonify(success=False, message="Статус замовлення не знайдено."), 404
+
+if __name__ == '__main__':
+    # In production, use Gunicorn or uWSGI 
+    # app.run(host='0.0.0.0', port=5000)
+    app.run(debug=False)
