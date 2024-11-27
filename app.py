@@ -4,6 +4,12 @@ import re
 from flask import Flask
 
 app = Flask(__name__)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
+    # Rest of your webhook function handling
+    return jsonify({"status": "OK"}), 200
+
 # Hardcoding SECRET_KEY for development or in a situation where you're not ready to use environment variables
 app.secret_key = 'this-is-a-really-secret-key-and-you-should-not-use-this-in-production-really-very-secret'
 
