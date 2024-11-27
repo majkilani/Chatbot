@@ -7,6 +7,7 @@ from email.mime.multipart import MIMEMultipart
 import smtplib
 from datetime import datetime
 import logging
+import json
 
 app = Flask(__name__)
 
@@ -21,7 +22,6 @@ SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
 
 # Environment variables for application configuration
-# SECRET KEY should be environment variables in production
 try:
     app.secret_key = os.environ['SECRET_KEY']
 except KeyError:
@@ -46,7 +46,7 @@ def send_text(sender_id, message):
         "access_token": os.environ['PAGE_ACCESS_TOKEN']
     }
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json;charset=utf-8"
     }
     data = {
         "recipient": {
